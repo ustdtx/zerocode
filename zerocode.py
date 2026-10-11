@@ -170,6 +170,8 @@ def relevant_context(root: Path, query: str, max_files: int = 6) -> str:
 def read_file(root: Path, value: str, start: int = 1, end: int = 160) -> str:
     path = safe_path(root, value)
     if not path.is_file():
+        if not files_in(root):
+            raise AgentError(f"File does not exist: {value}; repository is empty, so create it with apply_patch instead of reading it.")
         raise AgentError(f"File does not exist: {value}")
     try:
         lines = path.read_text(encoding="utf-8").splitlines()
@@ -216,10 +218,57 @@ def apply_patch(root: Path, patch: str) -> str:
     if not patch.strip().startswith("diff ") and "*** Begin Patch" not in patch:
         raise AgentError("Expected a unified diff beginning with 'diff ' or an apply_patch block.")
     if "*** Begin Patch" in patch:
-        patch = patch.replace("*** Begin Patch\n", "").replace("\n*** End Patch", "")
-        patch = re.sub(r"\n\*\*\* Update File: ([^\n]+)", lambda m: f"\ndiff --git a/{m.group(1)} b/{m.group(1)}\n--- a/{m.group(1)}\n+++ b/{m.group(1)}", patch)
-        patch = re.sub(r"\n\*\*\* Add File: ([^\n]+)", lambda m: f"\ndiff --git a/{m.group(1)} b/{m.group(1)}\n--- /dev/null\n+++ b/{m.group(1)}", patch)
-        patch = patch.replace("\n*** Delete File:", "\ndiff --git")
+        lines = patch.splitlines()
+        start = next((index for index, line in enumerate(lines) if line.strip() == "*** Begin Patch"), -1)
+        end = next((index for index, line in enumerate(lines) if line.strip() == "*** End Patch"), len(lines))
+        converted: list[str] = []
+        current_kind = ""
+        current_path = ""
+        body: list[str] = []
+
+        def flush() -> None:
+            if not current_path:
+                return
+            if current_kind == "add":
+                content = [line if line.startswith("+") else "+" + line for line in body]
+                converted.extend([
+                    f"diff --git a/{current_path} b/{current_path}",
+                    "new file mode 100644",
+                    "--- /dev/null",
+                    f"+++ b/{current_path}",
+                    f"@@ -0,0 +1,{len(content)} @@",
+                    *content,
+                ])
+            elif current_kind == "delete":
+                converted.extend([
+                    f"diff --git a/{current_path} b/{current_path}",
+                    "deleted file mode 100644",
+                    f"--- a/{current_path}",
+                    "+++ /dev/null",
+                    *body,
+                ])
+            else:
+                converted.extend([
+                    f"diff --git a/{current_path} b/{current_path}",
+                    f"--- a/{current_path}",
+                    f"+++ b/{current_path}",
+                    *body,
+                ])
+
+        for line in lines[start + 1:end]:
+            if line.startswith("*** Update File: ") or line.startswith("*** Add File: ") or line.startswith("*** Delete File: "):
+                flush()
+                if line.startswith("*** Update File: "):
+                    current_kind, current_path = "update", line.split(": ", 1)[1].strip()
+                elif line.startswith("*** Add File: "):
+                    current_kind, current_path = "add", line.split(": ", 1)[1].strip()
+                else:
+                    current_kind, current_path = "delete", line.split(": ", 1)[1].strip()
+                body = []
+            elif current_path:
+                body.append(line)
+        flush()
+        patch = "\n".join(converted) + "\n"
     touched = set()
     for line in patch.splitlines():
         if line.startswith("+++ b/") or line.startswith("--- a/"):
