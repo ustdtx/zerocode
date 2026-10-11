@@ -30,6 +30,28 @@ def banner(root: Path) -> None:
     print("  retrieval:http://127.0.0.1:2248/v1")
     print(f"  repo:     {root}")
     print()
+
+
+def compact_messages(messages: list[dict[str, str]], budget: int = 48000) -> list[dict[str, str]]:
+    """Keep the system prompt and newest turns inside the 16K-token budget."""
+    if not messages:
+        return messages
+    kept: list[dict[str, str]] = []
+    used = len(messages[0].get("content", ""))
+    for message in reversed(messages[1:]):
+        size = len(message.get("content", ""))
+        if kept and used + size > budget:
+            break
+        kept.append(message)
+        used += size
+    return [messages[0], *reversed(kept)]
+
+
+def retrieved_context(index: CodeIndex, task: str) -> str:
+    try:
+        return index.retrieve(task, limit=6, max_chars=12000)
+    except Exception as exc:
+        return f"(retrieval unavailable: {exc})"
     print(colour(DIM, "  Type a task. Commands: /help /index /diff /clear /repo /quit"))
     print()
 
@@ -37,14 +59,16 @@ def banner(root: Path) -> None:
 def run_task(root: Path, model: LocalModel, task: str, max_turns: int, messages: list[dict[str, str]] | None, index: CodeIndex) -> list[dict[str, str]]:
     if messages is None:
         messages = initial_messages(root, task)
+        messages[1]["content"] += "\n\nHost-provided retrieved context (use tools to verify it):\n" + retrieved_context(index, task)
     else:
-        messages.append({"role": "user", "content": f"New task: {task}\nInspect current files before editing."})
+        messages.append({"role": "user", "content": f"New task: {task}\nInspect current files before editing.\n\nHost-provided retrieved context (use tools to verify it):\n{retrieved_context(index, task)}"})
     state = TaskState()
     for turn in range(1, max_turns + 1):
         print(colour(DIM, f"\n[{turn}/{max_turns}] model is thinking..."))
         raw = ""
         name = ""
         try:
+            messages = compact_messages(messages)
             raw = model.ask(messages)
             action = extract_json(raw)
             validate_action(action, state.inspected)

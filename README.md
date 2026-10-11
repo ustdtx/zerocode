@@ -84,6 +84,8 @@ The executable is written to `dist\zerocode.exe`. It connects to already-running
 
 After starting both servers, open a project directory and run `zerocode`. ZeroCode incrementally updates its index on startup. Use `/index` after source changes to update it manually. The index is stored in `.zerocode\index.sqlite3`, which is intentionally ignored by Git.
 
+Indexed embeddings are the context offload layer: the full codebase stays on disk, while each task receives only the highest-ranked relevant chunks. The TUI also trims old conversation turns before sending requests, keeping the active prompt bounded for a 16K context window.
+
 ## Existing Local Models
 
 The harness does not require model aliases in its UI. It discovers whichever model is exposed on port `2247` and whichever embedding model is exposed on port `2248`. On startup it performs an incremental index update; unchanged files and existing vectors are skipped. Use `/index` to force an update after making changes.

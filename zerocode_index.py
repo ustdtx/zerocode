@@ -211,7 +211,7 @@ class CodeIndex:
         finally:
             connection.close()
 
-    def retrieve(self, query: str, limit: int = 8) -> str:
+    def retrieve(self, query: str, limit: int = 6, max_chars: int = 12000) -> str:
         connection = self._connect()
         try:
             rows = connection.execute("SELECT id, path, start_line, end_line, text, embedding FROM chunks").fetchall()
@@ -232,9 +232,15 @@ class CodeIndex:
                 semantic = _cosine(query_vector, _unpack(row[5])) if query_vector and row[5] else 0.0
                 scored.append((semantic * 0.7 + min(1.0, lexical / 5.0) * 0.3, row))
             selected = sorted(scored, key=lambda item: item[0], reverse=True)[:limit]
-            return "\n\n".join(
-                f"{row[1]}:{row[2]}-{row[3]} score={score:.3f}\n{row[4]}" for score, row in selected
-            )
+            sections = []
+            characters = 0
+            for score, row in selected:
+                section = f"{row[1]}:{row[2]}-{row[3]} score={score:.3f}\n{row[4]}"
+                if sections and characters + len(section) > max_chars:
+                    break
+                sections.append(section)
+                characters += len(section)
+            return "\n\n".join(sections)
         finally:
             connection.close()
 
