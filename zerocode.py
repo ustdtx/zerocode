@@ -98,14 +98,17 @@ def detect_checks(root: Path) -> list[str]:
 def repo_summary(root: Path) -> str:
     paths = files_in(root)
     checks = detect_checks(root)
+    empty = not paths
     markers = [path.name for path in root.iterdir() if path.name in {
         "package.json", "pyproject.toml", "pytest.ini", "Cargo.toml", "go.mod", "README.md"
     }]
     return "\n".join([
         f"root: {root}",
         f"text_files: {len(paths)}",
+        f"repository_state: {'empty' if empty else 'existing'}",
         f"top_level_markers: {', '.join(sorted(markers)) or '(none)'}",
         f"suggested_checks: {', '.join(checks) or '(none detected)'}",
+        "next_step: " + ("create PLAN.md and begin the first smallest task" if empty else "inspect relevant existing files"),
         "top_level_entries: " + ", ".join(sorted(path.name for path in root.iterdir())[:80]),
     ])
 
@@ -114,7 +117,7 @@ def list_files(root: Path) -> str:
     paths = [display_path(root, path) for path in files_in(root)]
     if len(paths) > 300:
         return "\n".join(paths[:300]) + f"\n... ({len(paths) - 300} more files; use search)"
-    return "\n".join(paths) or "(repository has no text files)"
+    return "\n".join(paths) or "(repository is empty; stop searching and create the initial plan)"
 
 
 def find_symbol(root: Path, name: str, max_results: int = 40) -> str:
@@ -201,7 +204,7 @@ def run_check(root: Path, command: str) -> str:
     command = command.strip()
     if not command or not command.startswith(ALLOWED_CHECKS):
         raise AgentError("Check command is not allowed. Use pytest, python, npm, dotnet, cargo, or go commands.")
-    completed = subprocess.run(command, cwd=root, shell=True, capture_output=True, text=True, timeout=180)
+    completed = subprocess.run(command, cwd=root, shell=True, capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=180)
     output = (completed.stdout + "\n" + completed.stderr).strip()
     if len(output) > 8000:
         output = output[-8000:]
@@ -225,17 +228,17 @@ def apply_patch(root: Path, patch: str) -> str:
             touched.add(path)
     if len(touched) > 5:
         raise AgentError("Patch touches more than five files. Split the change into smaller patches.")
-    check = subprocess.run(["git", "apply", "--check", "--whitespace=nowarn", "-"], input=patch, text=True, cwd=root, capture_output=True)
+    check = subprocess.run(["git", "apply", "--check", "--whitespace=nowarn", "-"], input=patch, text=True, encoding="utf-8", errors="replace", cwd=root, capture_output=True)
     if check.returncode:
         raise AgentError(f"Patch rejected during validation: {check.stderr.strip()}")
-    process = subprocess.run(["git", "apply", "--whitespace=nowarn", "-"], input=patch, text=True, cwd=root, capture_output=True)
+    process = subprocess.run(["git", "apply", "--whitespace=nowarn", "-"], input=patch, text=True, encoding="utf-8", errors="replace", cwd=root, capture_output=True)
     if process.returncode:
         raise AgentError(f"Patch rejected: {process.stderr.strip()}")
     return "Patch applied successfully.\n\n" + diff(root)
 
 
 def diff(root: Path) -> str:
-    process = subprocess.run(["git", "diff", "--", "."], cwd=root, capture_output=True, text=True)
+    process = subprocess.run(["git", "diff", "--", "."], cwd=root, capture_output=True, text=True, encoding="utf-8", errors="replace")
     return process.stdout[-12000:] or "(no changes)"
 
 
@@ -262,10 +265,17 @@ Rules:
 - Do not claim success unless a check passed or you clearly state that no check exists.
 - Do not explain your reasoning. Return one JSON action only, with no markdown and no extra keys.
 - Phase order is INSPECT -> EDIT -> VERIFY -> DONE. The host enforces this order.
+- If the repository is empty, stop searching. Create PLAN.md with the smallest task breakdown, then implement only the first task.
+- An empty repository is not a reason to keep calling list_files; use apply_patch to create the initial plan or scaffold.
 """
 
 
 def initial_messages(root: Path, task: str) -> list[dict[str, str]]:
+    empty = not files_in(root)
+    empty_instruction = (
+        "\nThis repository is empty. Do not search repeatedly. Create PLAN.md with the smallest task list, then start only the first task."
+        if empty else ""
+    )
     return [
         {
             "role": "system",
@@ -274,9 +284,10 @@ def initial_messages(root: Path, task: str) -> list[dict[str, str]]:
                 f"Repository root: {root}\n"
                 "The host, not you, controls files and commands. You must use tools for facts.\n"
                 + TOOLS
+                + empty_instruction
             ),
         },
-        {"role": "user", "content": f"New task: {task}\nFirst inspect the repository before proposing any edit."},
+        {"role": "user", "content": f"New task: {task}\nFirst inspect the repository before proposing any edit.{empty_instruction}"},
     ]
 
 

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import json
 import os
 import sys
 from pathlib import Path
@@ -63,6 +64,7 @@ def run_task(root: Path, model: LocalModel, task: str, max_turns: int, messages:
     else:
         messages.append({"role": "user", "content": f"New task: {task}\nInspect current files before editing.\n\nHost-provided retrieved context (use tools to verify it):\n{retrieved_context(index, task)}"})
     state = TaskState()
+    repeated_actions: dict[str, int] = {}
     for turn in range(1, max_turns + 1):
         print(colour(DIM, f"\n[{turn}/{max_turns}] model is thinking..."))
         raw = ""
@@ -74,6 +76,10 @@ def run_task(root: Path, model: LocalModel, task: str, max_turns: int, messages:
             validate_action(action, state.inspected)
             validate_phase(action, state)
             name = action.get("action", "unknown")
+            signature = json.dumps(action, sort_keys=True, ensure_ascii=True)
+            repeated_actions[signature] = repeated_actions.get(signature, 0) + 1
+            if repeated_actions[signature] >= 3:
+                raise AgentError("You repeated the same action three times. Stop searching and make the smallest next patch, usually PLAN.md for an empty repository.")
             print(colour(YELLOW, f"  {state.label()} -> {name}"))
             if name == "finish":
                 print(colour(GREEN, f"  {action.get('summary', 'Finished.')}"))
